@@ -48,15 +48,30 @@ include("FactorableSubgraph.jl")
 include("Factoring.jl")
 include("Jacobian.jl")
 include("CodeGeneration.jl")
-include("NonUnique.jl")
+# include("NonUnique.jl")
 
 # FastDifferentiationVisualizationExt overloads them
 function make_dot_file end
 function draw_dot end
 function write_dot end
 
-include("FDTests.jl")
 
+
+function test()
+    @variables x y z w u
+
+    e1 = PathEdge(1, 2, x, BitVector([1, 0, 1]), BitVector([0, 0, 1]))
+    e2 = PathEdge(3, 2, y, BitVector([1, 0, 0]), BitVector([0, 0, 1]))
+    e3 = PathEdge(3, 2, z, BitVector([1, 1, 0]), BitVector([0, 0, 1]))
+    e4 = PathEdge(3, 2, w, BitVector([1, 1, 0]), BitVector([1, 0, 1]))
+    e5 = PathEdge(3, 2, u, BitVector([1, 1, 0]), BitVector([0, 1, 1]))
+
+
+    path = [e1, e3, e2]   #2,2,1 times used
+    println(multiply_sequence(path))
+    @test (x * z) * y === multiply_sequence(path)
+end
+export test
 
 
 end # module

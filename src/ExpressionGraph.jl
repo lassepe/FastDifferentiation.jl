@@ -107,9 +107,12 @@ is_tree(a::Node) = arity(a) >= 1
 
 function is_variable(a::Node)
     tmp = (value(a) isa Symbol)
-    tmp2 = (arity(a) == 0) || all(is_variable.(children(a))) #this allows q(t) types. Even allows q(q(t)) types. Now have to figure out what the derivative of this is.
+    #TODO the code below causes an infinite recursion and stack overflow. Figure out and fix.
+    # tmp2 = (arity(a) == 0) || all(is_variable.(children(a))) #this allows q(t) types. Even allows q(q(t)) types. Now have to figure out what the derivative of this is.
 
-    return tmp && tmp2 #previously had this all in a single line statement but the compiler generated weird code
+    # return tmp && tmp2 #previously had this all in a single line statement but the compiler generated weird code
+
+    return tmp
 end
 
 is_constant(a::Node) = !is_variable(a) && !is_tree(a)
@@ -165,6 +168,14 @@ is_times(a::Node) = value(a) == *
 
 is_nary_times(a::Node) = is_nary(a) && value(a) == typeof(*)
 
+function sort_args(a::Node, b::Node)
+    # if is_variable(a) && is_variable(b)
+    #     return sort((a, b), by=value) #sort by name of variables
+    # else
+    #     return sort((a, b), by=objectid)
+    # end
+    return (a, b)
+end
 
 
 function simplify_check_cache(::typeof(^), a, b, cache)
@@ -184,6 +195,7 @@ end
 function simplify_check_cache(::typeof(*), na, nb, cache)
     a = Node(na)
     b = Node(nb)
+    (a, b) = sort_args(a, b)
 
     #TODO sort variables so if y < x then x*y => y*x. The will automatically get commutativity.
     #c1*c2 = c3, (c1*x)*(c2*x) = c3*x
@@ -245,6 +257,7 @@ end
 function simplify_check_cache(::typeof(+), na, nb, cache)
     a = Node(na)
     b = Node(nb)
+    a, b = sort_args(a, b)
 
     #TODO sort variables so if y < x then x*y => y*x. The will automatically get commutativity.
 

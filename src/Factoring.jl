@@ -212,39 +212,40 @@ end
 
 
 function multiply_sequence(path::AbstractVector{S}) where {S<:PathEdge}
-    if length(path) == 1
-        return value(path[1])
-    end
+    # if length(path) == 1
+    #     return value(path[1])
+    # end
 
-    run = Node[]
-    count = 2
-    prod = Node(1.0)
-    run_start = times_used(path[1])
-    push!(run, value(path[1]))
+    # run = Node[]
+    # count = 2
+    # prod = Node(1.0)
+    # run_start = times_used(path[1])
+    # push!(run, value(path[1]))
 
-    for val in @view path[2:end]
-        if times_used(val) != run_start
-            runprod = Node(1.0)
-            for runval in run
-                runprod *= runval
-            end
-            empty!(run)
-            prod *= runprod
-            run_start = times_used(val)
-        end
+    # for val in @view path[2:end]
+    #     if times_used(val) != run_start
+    #         runprod = Node(1.0)
+    #         for runval in run
+    #             runprod *= runval
+    #         end
+    #         empty!(run)
+    #         prod *= runprod
+    #         run_start = times_used(val)
+    #     end
 
-        push!(run, value(val))
+    #     push!(run, value(val))
 
-        if count == length(path)
-            runprod = Node(1.0)
-            for runval in run
-                runprod *= runval
-            end
-            prod *= runprod
-        end
-        count += 1
-    end
-    return prod
+    #     if count == length(path)
+    #         runprod = Node(1.0)
+    #         for runval in run
+    #             runprod *= runval
+    #         end
+    #         prod *= runprod
+    #     end
+    #     count += 1
+    # end
+    # return prod
+    return foldl((x, y) -> value(x) * value(y), path)
 end
 
 

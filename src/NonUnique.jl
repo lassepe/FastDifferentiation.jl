@@ -3,7 +3,7 @@ module NonUnique
 using JLD2: JLD2
 using FastDifferentiation
 import FastDifferentiation as FD
-# using ElectronDisplay
+using ElectronDisplay
 
 
 function bug()
@@ -38,20 +38,21 @@ function bug()
 end
 export bug
 
-import FiniteDifferences
-using FastDifferentiation.FDInternals
-using FastDifferentiation.FDTests
+
 function test()
-
-
     FD_graph = spherical_harmonics(6)
-    factor!(FD_graph)
+    FD.factor!(FD_graph)
+    for edge in FD.unique_edges(FD_graph)
+        if FD.value(edge) == 0
+            println(FD.node(FD_graph, FD.top_vertex(edge)))
+        end
+    end
+
     FD.write_dot("sph.svg", FD_graph, value_labels=true, reachability_labels=false)
     # FD.jacobian(roots(FD_graph), variables(FD_graph))
     return nothing
 end
 export test
-
 
 end # module NonUnique
 export NonUnique

@@ -64,41 +64,37 @@ function function_body!(dag::Node, variable_to_index::IdDict{Node,Int64}, node_t
     return body, _dag_to_function(dag)
 end
 
-zero_array_declaration(::StaticArray{S,T,N}, input_variables::AbstractVector{T2}) where {S,T,T2,N} = :(result = MArray{$(S),promote_type(Float64, eltype(input_variables)),$N}(undef); result .= 0) #need to initialize array to zero because this is no longer being done by simple assignment statements.
-undef_array_declaration(::StaticArray{S,T,N}, input_variables::AbstractVector{T2}) where {S,T,T2,N} = :(result = MArray{$(S),promote_type(Float64, eltype(input_variables)),$N}(undef)) #need to initialize array to zero because this is no longer being done by simple assignment statements.
-
-"""
-    return_declaration(func_array::Array, input_variables::AbstractVector)
-
-Fills the return array with zeros, which is much more efficient for sparse arrays than setting each element with a line of code"""
-zero_array_declaration(func_array::Array{T,N}, input_variables::AbstractVector{S}) where {S,T,N} = :(result = zeros(promote_type(Float64, eltype(input_variables)), $(size(func_array))))
-undef_array_declaration(func_array::Array{T,N}, input_variables::AbstractVector{S}) where {S,T,N} = :(result = Array{promote_type(Float64, eltype(input_variables))}(undef, $(size(func_array))))
+undef_array_declaration(::StaticArray{S,<:Any,N}) where {S,N} = :(result = MArray{$(S),promote_type(result_element_type, eltype(input_variables)),$N}(undef))
+undef_array_declaration(func_array::Array{T,N}) where {T,N} = :(result = Array{result_element_type}(undef, $(size(func_array))))
 
 return_expression(::SArray) = :(return SArray(result))
 return_expression(::Array) = :(return result)
 
+function _infer_numeric_eltype(array::AbstractArray{<:Node})
+    eltype = Union{}
+    for elt in array
+        eltype = promote_type(eltype, typeof(numeric_value(elt)))
+    end
+    eltype
+end
+
+
+numeric_value(a::Node) = is_constant(a) ? a.node_value : NaN
 
 """Should only be called if `all_constants(func_array) == true`. Unpredictable results otherwise."""
 function to_number(func_array::AbstractArray{T}) where {T<:Node}
     #find type
-    arr_type = typeof(value(func_array[begin]))
-    for elt in func_array
-        arr_type = promote_type(arr_type, typeof(value(elt)))
-    end
-    tmp = similar(func_array, arr_type)
-    @. tmp = value(func_array)
+    element_type = _infer_numeric_eltype(func_array)
+    tmp = similar(func_array, element_type)
+    @. tmp = numeric_value(func_array)
     return tmp
 end
 
 function to_number(func_array::SparseMatrixCSC{T}) where {T<:Node}
     nz = nonzeros(func_array)
-    #find type
-    arr_type = typeof(value(func_array[begin]))
-    for elt in nz
-        arr_type = promote_type(arr_type, typeof(value(elt)))
-    end
-    tmp = similar(nz, arr_type)
-    @. tmp = value(nz)
+    element_type = _infer_numeric_eltype(nz)
+    tmp = similar(nz, element_type)
+    @. tmp = numeric_value(nz)
     return tmp
 end
 
@@ -112,90 +108,70 @@ end
     )
 """
 function make_Expr(func_array::AbstractArray{T}, input_variables::AbstractVector{S}, in_place::Bool, init_with_zeros::Bool) where {T<:Node,S<:Node}
+    zero_threshold = 0.8
+    zero_mask = is_zero.(func_array)
+    nonzero_const_mask = is_constant.(func_array) .& .!zero_mask
+
+    zero_keys = findall(zero_mask)
+    nonzero_const_keys = findall(nonzero_const_mask)
+    nonzero_const_values = to_number(func_array)
+
     node_to_var = IdDict{Node,Union{Symbol,Real,Expr}}()
+    node_to_index = IdDict{Node,Int64}()
+    for (i, node) in pairs(input_variables)
+        node_to_index[node] = i
+    end
+
     body = Expr(:block)
 
-    num_zeros = count(is_zero, (func_array))
-    num_const = count((x) -> is_constant(x) && !is_zero(x), func_array)
+    # declare result element type, and result variable if not provided by the user
+    if in_place && init_with_zeros && !isempty(zero_keys)
+        push!(body.args, :(result_element_type = eltype(input_variables)))
+    elseif !in_place
+        push!(body.args, :(result_element_type = promote_type($(_infer_numeric_eltype(func_array)), eltype(input_variables))))
+        push!(body.args, undef_array_declaration(func_array))
+    end
 
-    if num_const + num_zeros == length(func_array) #every statement is a constant so can generate very short code body
-        elt_type = typeof(value(func_array[begin]))
-        for elt in func_array
-            elt_type = promote_type(elt_type, typeof(value(elt)))
-        end
-
-        if num_zeros > 5 * num_const
-            if in_place
-                push!(body.args, :(result .= zero($elt_type)))
-            else
-                push!(body.args, zero_array_declaration(func_array, input_variables))
-            end
-
-
-            #have mostly zeros but small number of constants so fill these in one by one
-            for (i, node) in pairs(func_array) #know that all elements in func_array are constant but only need to set non-zero values
-                if is_constant(node) && !is_zero(node)
-                    push!(body.args, :(result[$i] = $(value(node))))
-                end
-            end
-
-        else #use constant array
-            if in_place
-                push!(body.args, :(result .= $(to_number(func_array))))
-            else
-                push!(body.args, :(result = copy($(to_number(func_array)))))
-            end
-        end
-    else #not all constant values
-        zero_threshold = 0.5
-        const_threshold = 0.5
-
-        do_array_const = num_const > const_threshold * length(func_array)
-        do_array_zero = init_with_zeros && (!do_array_const && (num_zeros > zero_threshold * length(func_array))) #only zero array if not also using const array initialization
-
-        if in_place
-            if do_array_const #initialize array with array of constants
-                push!(body.args, :(result .= $(to_number(func_array))))
-            else
-                if do_array_zero #initialize array with zeros
-                    push!(body.args, :(result .= zero(eltype(input_variables))))
-                end
-            end
-        else #write declaration for array to hold result
-            if do_array_const #initialize array with array of constants
-                push!(body.args, :(result = copy($(to_number(func_array)))))
-            elseif do_array_zero #initialize array with zeros
-                push!(body.args, zero_array_declaration(func_array, input_variables)) #zero array elements with zeros(....)
-
-            else
-                push!(body.args, undef_array_declaration(func_array, input_variables))
-            end
-        end
-
-        node_to_index = IdDict{Node,Int64}()
-        for (i, node) in pairs(input_variables)
-            node_to_index[node] = i
-        end
-
-        for (i, node) in pairs(func_array)
-            #if already assigned const array then don't need to generate assignment statements for any constants
-            #if already assigned zero array then don't need to generate assignment statements for any zeros
-            #always generate statements for non-constant nodes
-            if !is_constant(node) || init_with_zeros && (!(do_array_const && is_constant(node)) || (!(do_array_zero && is_zero(node))))
-                node_body, variable = function_body!(node, node_to_index, node_to_var)
-
-                for arg in node_body.args
-                    push!(body.args, arg)
-                end
-                push!(body.args, :(result[$i] = $variable))
-            end
+    # set all zeros in one shot
+    if !in_place || init_with_zeros
+        mostly_zeros = length(zero_keys) > zero_threshold * length(func_array)
+        if mostly_zeros
+            # the result is clearly dominated by zeros so we don't bother to mask out the exact places
+            push!(body.args, :(result .= zero(result_element_type)))
+        elseif !isempty(zero_keys)
+            push!(body.args, :(result[$zero_keys] .= zero(result_element_type)))
         end
     end
 
-    if !in_place
+    # set all nonzero constants in one shot
+    is_all_nonzero_constants = length(nonzero_const_keys) == length(func_array)
+    if is_all_nonzero_constants
+        push!(body.args, :(result .= $nonzero_const_values))
+    elseif !isempty(nonzero_const_keys)
+        push!(body.args, :(result[$nonzero_const_keys] .= $(nonzero_const_values[nonzero_const_keys])))
+    end
+
+
+    for (i, node) in pairs(func_array)
+        # skip all terms that we have computed above during construction
+        if zero_mask[i] || nonzero_const_mask[i]
+            continue
+        end
+        node_body, variable = function_body!(node, node_to_index, node_to_var)
+        for arg in node_body.args
+            push!(body.args, arg)
+        end
+        push!(body.args, :(result[$i] = $variable))
+    end
+
+    # return result or nothing if in_place
+    if in_place
+        push!(body.args, :(return nothing))
+    else
         push!(body.args, return_expression(func_array))
     end
 
+    # wrap in function body
     if in_place
         return :((result, input_variables) -> @inbounds begin
             $body

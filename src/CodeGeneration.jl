@@ -110,11 +110,9 @@ end
 function make_Expr(func_array::AbstractArray{T}, input_variables::AbstractVector{S}, in_place::Bool, init_with_zeros::Bool) where {T<:Node,S<:Node}
     zero_threshold = 0.8
     zero_mask = is_zero.(func_array)
-    nonzero_const_mask = is_constant.(func_array) .& .!zero_mask
-
     zero_keys = findall(zero_mask)
-    nonzero_const_keys = findall(nonzero_const_mask)
-    nonzero_const_values = to_number(func_array)
+    const_mask = is_constant.(func_array)
+    is_all_const = count(const_mask) == length(func_array)
 
     node_to_var = IdDict{Node,Union{Symbol,Real,Expr}}()
     node_to_index = IdDict{Node,Int64}()
@@ -132,8 +130,9 @@ function make_Expr(func_array::AbstractArray{T}, input_variables::AbstractVector
         push!(body.args, undef_array_declaration(func_array))
     end
 
+
     # set all zeros in one shot
-    if !in_place || init_with_zeros
+    if !is_all_const && (!in_place || init_with_zeros)
         mostly_zeros = length(zero_keys) > zero_threshold * length(func_array)
         if mostly_zeros
             # the result is clearly dominated by zeros so we don't bother to mask out the exact places
@@ -143,18 +142,27 @@ function make_Expr(func_array::AbstractArray{T}, input_variables::AbstractVector
         end
     end
 
+    if !is_all_const || (in_place && !init_with_zeros)
+        remaining_const_mask = const_mask .& .!zero_mask
+    else
+        remaining_const_mask = const_mask
+    end
+    remaining_const_keys = findall(remaining_const_mask)
+
     # set all nonzero constants in one shot
-    is_all_nonzero_constants = length(nonzero_const_keys) == length(func_array)
-    if is_all_nonzero_constants
-        push!(body.args, :(result .= $nonzero_const_values))
-    elseif !isempty(nonzero_const_keys)
-        push!(body.args, :(result[$nonzero_const_keys] .= $(nonzero_const_values[nonzero_const_keys])))
+    is_all_remaining_const = length(remaining_const_keys) == length(func_array)
+    if is_all_remaining_const
+        remaining_const_values = to_number(func_array)
+        push!(body.args, :(result .= $remaining_const_values))
+    elseif !isempty(remaining_const_keys)
+        remaining_const_values = to_number(func_array[remaining_const_keys])
+        push!(body.args, :(result[$remaining_const_keys] .= $remaining_const_values))
     end
 
 
     for (i, node) in pairs(func_array)
         # skip all terms that we have computed above during construction
-        if zero_mask[i] || nonzero_const_mask[i]
+        if zero_mask[i] || remaining_const_mask[i]
             continue
         end
         node_body, variable = function_body!(node, node_to_index, node_to_var)
